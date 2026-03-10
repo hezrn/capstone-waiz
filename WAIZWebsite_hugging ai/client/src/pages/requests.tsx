@@ -1,0 +1,481 @@
+import { useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { queryClient, apiRequest } from "@/lib/queryClient";
+import { Request as RequestType, User } from "@shared/schema";
+import { Plus, Calendar, MapPin, Clock, Users, MessageCircle, Phone } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
+import { Skeleton } from "@/components/ui/skeleton";
+
+export default function RequestsPage() {
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [selectedRequest, setSelectedRequest] = useState<RequestType | null>(null);
+  const { toast } = useToast();
+
+  const userStr = localStorage.getItem("user");
+  const currentUser: User | null = userStr && userStr !== "undefined" ? JSON.parse(userStr) : null;
+  const isHousehold = currentUser?.userType === "household";
+
+  const { data: requests = [], isLoading } = useQuery<RequestType[]>({
+    queryKey: ["/api/requests"],
+    queryFn: async () => {
+      return await fetch("/api/requests").then(res => res.json());
+    },
+  });
+
+  return (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center">
+        <div>
+          <h2 className="text-3xl font-bold text-foreground">
+            {isHousehold ? "My Requests" : "Collection Requests"}
+          </h2>
+          <p className="text-muted-foreground">
+            {isHousehold ? "Track your collection requests" : "Manage incoming collection requests"}
+          </p>
+        </div>
+        {isHousehold && (
+          <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+            <DialogTrigger asChild>
+              <Button data-testid="button-new-request">
+                <Plus className="w-4 h-4 mr-2" />
+                New Request
+              </Button>
+            </DialogTrigger>
+            <DialogContent>
+              <NewRequestForm onClose={() => setIsDialogOpen(false)} />
+            </DialogContent>
+          </Dialog>
+        )}
+      </div>
+
+      {/* Requests List */}
+      {isLoading ? (
+        <div className="space-y-4">
+          {[1, 2, 3].map((i) => (
+            <Card key={i}>
+              <CardHeader>
+                <Skeleton className="h-6 w-1/2" />
+                <Skeleton className="h-4 w-1/4 mt-2" />
+              </CardHeader>
+              <CardContent>
+                <Skeleton className="h-4 w-full" />
+                <Skeleton className="h-4 w-3/4 mt-2" />
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      ) : requests.length === 0 ? (
+        <Card>
+          <CardContent className="p-12 text-center">
+            <Calendar className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+            <p className="text-lg font-medium text-foreground">No requests yet</p>
+            <p className="text-sm text-muted-foreground">
+              {isHousehold ? "Create your first collection request" : "No pending requests at the moment"}
+            </p>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="space-y-4">
+          {requests.map((request) => (
+            <RequestCard 
+              key={request.id} 
+              request={request} 
+              isHousehold={isHousehold}
+              onViewDetails={() => setSelectedRequest(request)}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Request Details Modal */}
+      <Dialog open={!!selectedRequest} onOpenChange={(open) => !open && setSelectedRequest(null)}>
+        <DialogContent className="max-w-2xl">
+          {selectedRequest && (
+            <RequestDetailsModal 
+              request={selectedRequest} 
+              isHousehold={isHousehold}
+              onClose={() => setSelectedRequest(null)}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function RequestCard({ request, isHousehold, onViewDetails }: { request: RequestType; isHousehold: boolean; onViewDetails: () => void }) {
+  const { toast } = useToast();
+  
+  const statusColors: Record<string, "secondary" | "default" | "outline" | "destructive"> = {
+    Pending: "secondary",
+    Accepted: "default",
+    Completed: "outline",
+    Cancelled: "destructive",
+  };
+
+  const cancelMutation = useMutation({
+    mutationFn: async () => {
+      return await apiRequest("PATCH", `/api/requests/${request.id}`, { status: "Cancelled" });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/requests"] });
+      toast({
+        title: "Request cancelled",
+        description: "Your request has been cancelled",
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Failed to cancel request",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const acceptMutation = useMutation({
+    mutationFn: async () => {
+      return await apiRequest("PATCH", `/api/requests/${request.id}`, { status: "Accepted" });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/requests"] });
+      toast({
+        title: "Request accepted",
+        description: "You've accepted this collection request",
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Failed to accept request",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleAction = () => {
+    if (isHousehold) {
+      cancelMutation.mutate();
+    } else {
+      acceptMutation.mutate();
+    }
+  };
+
+  return (
+    <Card className="hover-elevate" data-testid={`card-request-${request.id}`}>
+      <CardHeader>
+        <div className="flex justify-between items-start">
+          <div>
+            <CardTitle className="text-lg">{request.type} Request</CardTitle>
+            <p className="text-sm text-muted-foreground mt-1">{request.items}</p>
+          </div>
+          <Badge variant={statusColors[request.status || "Pending"] || "secondary"} data-testid={`badge-status-${request.id}`}>
+            {request.status}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <MapPin className="w-4 h-4" />
+          <span>{request.address}</span>
+        </div>
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Calendar className="w-4 h-4" />
+          <span>{request.date}</span>
+        </div>
+        <p className="text-sm text-foreground">
+          {isHousehold ? `Junkshop: ${request.responderName || "Waiting for response"}` : `From: ${request.requesterName}`}
+        </p>
+      </CardContent>
+      <CardFooter className="flex gap-2">
+        {!isHousehold && (
+          <Button 
+            className="flex-1" 
+            variant="outline" 
+            onClick={onViewDetails}
+            data-testid={`button-view-details-${request.id}`}
+          >
+            View Details
+          </Button>
+        )}
+        {request.status === "Pending" && (
+          <Button 
+            className="flex-1" 
+            variant="outline" 
+            onClick={handleAction}
+            disabled={cancelMutation.isPending || acceptMutation.isPending}
+            data-testid={`button-action-${request.id}`}
+          >
+            {cancelMutation.isPending || acceptMutation.isPending 
+              ? (isHousehold ? "Cancelling..." : "Accepting...") 
+              : (isHousehold ? "Cancel Request" : "Accept Request")}
+          </Button>
+        )}
+      </CardFooter>
+    </Card>
+  );
+}
+
+function NewRequestForm({ onClose }: { onClose: () => void }) {
+  const { toast } = useToast();
+  const currentUser: User = JSON.parse(localStorage.getItem("user")!);
+
+  const [formData, setFormData] = useState({
+    type: "Collection",
+    items: "",
+    address: currentUser.address,
+    date: new Date().toISOString().split("T")[0],
+  });
+
+  const createRequestMutation = useMutation({
+    mutationFn: async (data: any) => {
+      return await apiRequest("POST", "/api/requests", data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/requests"] });
+      toast({
+        title: "Request created!",
+        description: "Your collection request has been submitted",
+      });
+      onClose();
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Failed to create request",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    createRequestMutation.mutate({
+      ...formData,
+      requesterId: currentUser.id,
+      requesterName: currentUser.name,
+      status: "Pending",
+    });
+  };
+
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle>New Collection Request</DialogTitle>
+        <DialogDescription>Schedule a pickup for your recyclables</DialogDescription>
+      </DialogHeader>
+      <form onSubmit={handleSubmit} className="space-y-4 mt-4">
+        <div className="space-y-2">
+          <Label htmlFor="items">Items for Collection</Label>
+          <Textarea
+            id="items"
+            placeholder="e.g., Mixed recyclables - plastic bottles, newspapers, cardboard"
+            value={formData.items}
+            onChange={(e) => setFormData({ ...formData, items: e.target.value })}
+            required
+            data-testid="input-items"
+          />
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="address">Pickup Address</Label>
+          <Input
+            id="address"
+            placeholder="Street, Barangay, Baguio City"
+            value={formData.address}
+            onChange={(e) => setFormData({ ...formData, address: e.target.value })}
+            required
+            data-testid="input-address"
+          />
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="date">Preferred Date</Label>
+          <Input
+            id="date"
+            type="date"
+            value={formData.date}
+            onChange={(e) => setFormData({ ...formData, date: e.target.value })}
+            required
+            data-testid="input-date"
+          />
+        </div>
+
+        <div className="flex gap-2">
+          <Button type="button" variant="outline" onClick={onClose} className="flex-1">
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            className="flex-1"
+            disabled={createRequestMutation.isPending}
+            data-testid="button-submit-request"
+          >
+            {createRequestMutation.isPending ? "Creating..." : "Create Request"}
+          </Button>
+        </div>
+      </form>
+    </>
+  );
+}
+
+function RequestDetailsModal({ request, isHousehold, onClose }: { request: RequestType; isHousehold: boolean; onClose: () => void }) {
+  const { toast } = useToast();
+
+  const statusColors: Record<string, "secondary" | "default" | "outline" | "destructive"> = {
+    Pending: "secondary",
+    Accepted: "default",
+    Completed: "outline",
+    Cancelled: "destructive",
+  };
+
+  const cancelMutation = useMutation({
+    mutationFn: async () => {
+      return await apiRequest("PATCH", `/api/requests/${request.id}`, { status: "Cancelled" });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/requests"] });
+      toast({
+        title: "Request cancelled",
+        description: "Your request has been cancelled",
+      });
+      onClose();
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Failed to cancel request",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const acceptMutation = useMutation({
+    mutationFn: async () => {
+      return await apiRequest("PATCH", `/api/requests/${request.id}`, { status: "Accepted" });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/requests"] });
+      toast({
+        title: "Request accepted",
+        description: "You've accepted this collection request",
+      });
+      onClose();
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Failed to accept request",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleAction = () => {
+    if (isHousehold) {
+      cancelMutation.mutate();
+    } else {
+      acceptMutation.mutate();
+    }
+  };
+
+  return (
+    <>
+      <DialogHeader>
+        <div className="flex justify-between items-start">
+          <div>
+            <DialogTitle className="text-2xl">{request.type} Request</DialogTitle>
+            <DialogDescription className="mt-1">Full request details and information</DialogDescription>
+          </div>
+          <Badge 
+            variant={statusColors[request.status || "Pending"] || "secondary"}
+            className="text-sm px-3 py-1"
+            data-testid={`badge-details-status-${request.id}`}
+          >
+            {request.status}
+          </Badge>
+        </div>
+      </DialogHeader>
+
+      <div className="space-y-6 mt-6">
+        {/* Items Section */}
+        <div>
+          <h3 className="font-semibold text-foreground mb-2">Items for Collection</h3>
+          <p className="text-sm text-muted-foreground bg-muted/30 p-3 rounded-lg">
+            {request.items}
+          </p>
+        </div>
+
+        {/* Location & Date */}
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <div className="flex items-center gap-2 mb-2">
+              <MapPin className="w-4 h-4 text-primary" />
+              <p className="text-sm font-semibold text-foreground">Pickup Address</p>
+            </div>
+            <p className="text-sm text-muted-foreground">{request.address}</p>
+          </div>
+          <div>
+            <div className="flex items-center gap-2 mb-2">
+              <Calendar className="w-4 h-4 text-primary" />
+              <p className="text-sm font-semibold text-foreground">Preferred Date</p>
+            </div>
+            <p className="text-sm text-muted-foreground">{request.date}</p>
+          </div>
+        </div>
+
+        {/* Requester & Responder */}
+        <div className="grid grid-cols-2 gap-4">
+          <div className="border border-border/50 rounded-lg p-3">
+            <div className="flex items-center gap-2 mb-2">
+              <Users className="w-4 h-4 text-primary" />
+              <p className="text-xs font-semibold text-foreground">Requester</p>
+            </div>
+            <p className="text-sm text-muted-foreground">{request.requesterName || "Unknown"}</p>
+          </div>
+          <div className="border border-border/50 rounded-lg p-3">
+            <div className="flex items-center gap-2 mb-2">
+              <Users className="w-4 h-4 text-primary" />
+              <p className="text-xs font-semibold text-foreground">Responder</p>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              {request.responderName || (request.status === "Pending" ? "Waiting for response" : "Not assigned")}
+            </p>
+          </div>
+        </div>
+
+        {/* Actions */}
+        <div className="flex gap-2 pt-4 border-t border-border/50">
+          <Button 
+            variant="outline" 
+            className="flex-1"
+            onClick={onClose}
+            data-testid="button-close-details"
+          >
+            Close
+          </Button>
+          {request.status === "Pending" && (
+            <Button 
+              className="flex-1"
+              onClick={handleAction}
+              disabled={cancelMutation.isPending || acceptMutation.isPending}
+              variant={isHousehold ? "outline" : "default"}
+              data-testid={`button-modal-action-${request.id}`}
+            >
+              {cancelMutation.isPending || acceptMutation.isPending 
+                ? (isHousehold ? "Cancelling..." : "Accepting...") 
+                : (isHousehold ? "Cancel Request" : "Accept Request")}
+            </Button>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
